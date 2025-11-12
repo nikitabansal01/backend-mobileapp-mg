@@ -30,7 +30,7 @@ async def generate_recommendations(
     raw_llm_responses = []
 
     for category in categories:
-        prompt = AIService.suggest_llm_prompt_for_recommendations(user_profile_obj, category)
+        prompt = await AIService.suggest_llm_prompt_for_recommendations(user_profile_obj, category)
         llm_response, actual_model = await AIService.call_ai_model(prompt)
         confidence = AIService.evaluate_llm_confidence(llm_response)
         recommendations = AIService.parse_recommendations_from_llm(llm_response, category)

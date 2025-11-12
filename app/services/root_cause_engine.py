@@ -10,15 +10,18 @@ class RootCauseEngine:
     """
     
     @staticmethod
-    def analyze_hormone_imbalance(user_data: Dict) -> Dict[str, any]:
+    async def analyze_hormone_imbalance(user_data: Dict) -> Dict[str, any]:
         """
-        Analyze hormone imbalance based on user data using clinical scoring.
+        Analyze hormone imbalance based on user data using clinical scoring + LLM.
+        
+        IMPORTANT: This function is now async to support LLM-based free-text scoring.
         
         Args:
             user_data: User survey data containing:
                 - period_description, cycle_length
                 - period_concerns, body_concerns, skin_hair_concerns, mental_health_concerns
                 - family_history, sleep_duration, stress_level, workout_intensity
+                - symptom_others, family_others (free-text for LLM scoring)
             
         Returns:
             Dict containing:
@@ -32,8 +35,8 @@ class RootCauseEngine:
         try:
             from app.services.hormone_scoring_service import HormoneScoringService
             
-            # Calculate detailed hormone scores (0-3 for each hormone)
-            scores = HormoneScoringService.calculate_hormone_scores(user_data)
+            # Calculate detailed hormone scores (0-3 for each hormone) - NOW ASYNC
+            scores = await HormoneScoringService.calculate_hormone_scores(user_data)
             
             # Get top 3 hormones by score
             top_hormones = HormoneScoringService.get_top_hormones(scores, top_n=3)

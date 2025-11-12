@@ -265,7 +265,7 @@ async def start_session_recommendations_generation(
         
         # Use Root cause engine to analyze hormone imbalance and add
         from app.services.root_cause_engine import RootCauseEngine
-        root_cause_analysis = RootCauseEngine.analyze_hormone_imbalance(temp_user_profile)
+        root_cause_analysis = await RootCauseEngine.analyze_hormone_imbalance(temp_user_profile)
         temp_user_profile["primaryImbalance"] = root_cause_analysis["primary_imbalance"]
         temp_user_profile["secondaryImbalances"] = root_cause_analysis["secondary_imbalances"]
         
@@ -333,7 +333,7 @@ async def _generate_recommendations_background(session_id: str, service, process
             
             # Use Root cause engine to analyze hormone imbalance and add
             from app.services.root_cause_engine import RootCauseEngine
-            root_cause_analysis = RootCauseEngine.analyze_hormone_imbalance(temp_user_profile)
+            root_cause_analysis = await RootCauseEngine.analyze_hormone_imbalance(temp_user_profile)
             temp_user_profile["primaryImbalance"] = root_cause_analysis["primary_imbalance"]
             temp_user_profile["secondaryImbalances"] = root_cause_analysis["secondary_imbalances"]
             

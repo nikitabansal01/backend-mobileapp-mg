@@ -546,11 +546,11 @@ class AIService:
             return 20
 
     @staticmethod
-    def suggest_llm_prompt_for_recommendations(user_profile: UserProfile, category: str) -> str:
+    async def suggest_llm_prompt_for_recommendations(user_profile: UserProfile, category: str) -> str:
         up = user_profile
         
         # Use root cause engine to analyze hormone imbalance
-        root_cause_analysis = RootCauseEngine.analyze_hormone_imbalance(user_profile.dict())
+        root_cause_analysis = await RootCauseEngine.analyze_hormone_imbalance(user_profile.dict())
         imbalance_text = RootCauseEngine.get_formatted_imbalance_text(root_cause_analysis)
         related_hormones = RootCauseEngine.get_related_hormones(root_cause_analysis)
         
@@ -755,14 +755,14 @@ CONFIDENCE ASSESSMENT:
         return prompt
 
     @staticmethod
-    def create_rag_enhanced_prompt(user_profile: UserProfile, category: str, research_texts: List[str]) -> str:
+    async def create_rag_enhanced_prompt(user_profile: UserProfile, category: str, research_texts: List[str]) -> str:
         """
         Create enhanced prompt including RAG search results
         """
         up = user_profile
         
         # Use root cause engine to analyze hormone imbalance
-        root_cause_analysis = RootCauseEngine.analyze_hormone_imbalance(user_profile.dict())
+        root_cause_analysis = await RootCauseEngine.analyze_hormone_imbalance(user_profile.dict())
         imbalance_text = RootCauseEngine.get_formatted_imbalance_text(root_cause_analysis)
         related_hormones = RootCauseEngine.get_related_hormones(root_cause_analysis)
         
@@ -914,7 +914,7 @@ CONFIDENCE ASSESSMENT:
                 research_texts = AIService.extract_research_texts(search_results)
                 
                 # 3. Create enhanced prompt
-                enhanced_prompt = AIService.create_rag_enhanced_prompt(user_profile, category, research_texts)
+                enhanced_prompt = await AIService.create_rag_enhanced_prompt(user_profile, category, research_texts)
                 
                 # 4. Call LLM
                 llm_response, actual_model = await AIService.call_ai_model(enhanced_prompt)
@@ -1074,7 +1074,7 @@ CONFIDENCE ASSESSMENT:
         """
         try:
             # Create prompt
-            prompt = AIService.suggest_llm_prompt_for_recommendations(user_profile, category)
+            prompt = await AIService.suggest_llm_prompt_for_recommendations(user_profile, category)
             logger.info(f"Session recommendation prompt creation completed: category={category}")
             
             # Call OpenAI API

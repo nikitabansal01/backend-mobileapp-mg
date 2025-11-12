@@ -6,8 +6,34 @@ Based on: AUVRA HORMONE ASSESSMENT SYSTEM (v1 Clinical Review)
 
 from typing import Dict, List, Optional
 import logging
+import json
+import os
+
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
+
+# ==================== LLM PROMPTS FOR FREE-TEXT ANALYSIS ====================
+
+SYSTEM_PROMPT = """Rate hormone imbalance (0-3 scale) from symptoms/family history.
+
+KEY INDICATORS:
+• androgens_high: Facial hair, acne, hair loss, irregular periods, dark skin patches
+• insulin_high: Weight gain (belly), sugar cravings, diabetes family history
+• estrogen_high: Heavy bleeding, breast pain, bloating, migraines
+• estrogen_low: Light/no periods, hot flashes, vaginal dryness
+• progesterone_low: Spotting before period, short cycles, PMS anxiety
+• cortisol_high: High stress, wired-tired, sleep issues, anxiety
+• cortisol_low: Extreme fatigue (morning), salt cravings, dizziness
+• thyroid_low: Fatigue, weight gain, hair loss, always cold, thyroid family history
+
+SCALE: 0=none, 1=mild, 2=moderate, 3=strong
+Return ONLY JSON:
+{"estrogen_high":0-3,"estrogen_low":0-3,"progesterone_low":0-3,"androgens_high":0-3,"insulin_high":0-3,"cortisol_high":0-3,"cortisol_low":0-3,"thyroid_low":0-3}"""
+
+USER_PROMPT_TEMPLATE = """Symptoms: {symptom_others}
+Family: {family_others}
+JSON:"""
 
 
 class HormoneScoringService:
@@ -220,12 +246,16 @@ class HormoneScoringService:
     # ==================== SCORING LOGIC ====================
     
     @staticmethod
-    def calculate_hormone_scores(user_data: Dict) -> Dict:
+    async def calculate_hormone_scores(user_data: Dict) -> Dict:
         """
-        Calculate 0-3 scores for 8 hormones based on clinical scoring tables.
+        Calculate 0-3 scores for 8 hormones based on clinical scoring tables + LLM analysis.
+        
+        IMPORTANT: This function is async to support LLM-based free-text scoring.
         
         Args:
-            user_data: Dictionary containing survey responses
+            user_data: Dictionary containing survey responses including:
+                - Structured fields: period_description, cycle_length, concerns, etc.
+                - Free-text fields: symptom_others, family_others (for LLM scoring)
             
         Returns:
             Dict with hormone scores (0-3) and confidence percentage
@@ -367,9 +397,27 @@ class HormoneScoringService:
                 total_signals += 1
                 logger.debug(f"Workout intensity '{workout_intensity}' scored")
             
-            # Cap all scores at 3 (max rating)
+            # Cap all scores at 3 (max rating) BEFORE LLM scoring
             for hormone in scores:
                 scores[hormone] = min(scores[hormone], 3)
+            
+            # ==================== LLM-BASED SCORING FOR FREE-TEXT ====================
+            # Process "Others" free-text fields using Gemini 2.5 Flash
+            symptom_others = user_data.get("symptom_others", "") or user_data.get("others", "")
+            family_others = user_data.get("family_others", "") or user_data.get("family_history_others", "")
+            
+            if symptom_others or family_others:
+                logger.info("Free-text input detected, calling LLM for additional scoring")
+                llm_scores = await HormoneScoringService.score_free_text_with_llm(
+                    symptom_others, 
+                    family_others
+                )
+                
+                if llm_scores:
+                    # Merge LLM scores with table-based scores (take maximum)
+                    scores = HormoneScoringService.merge_scores(scores, llm_scores)
+                    total_signals += 1  # Count LLM analysis as one signal
+                    logger.info("LLM scores merged with table-based scores")
             
             # Calculate confidence based on number of signals and score distribution
             confidence = HormoneScoringService._calculate_confidence(scores, total_signals)
@@ -378,12 +426,12 @@ class HormoneScoringService:
             scores["total_signals"] = total_signals
             
             logger.info(f"Hormone scoring completed: {total_signals} signals analyzed, confidence: {confidence}%")
-            logger.info(f"Scores: {scores}")
+            logger.info(f"Final scores: {scores}")
             
             return scores
             
         except Exception as e:
-            logger.error(f"Error calculating hormone scores: {str(e)}")
+            logger.error(f"Error calculating hormone scores: {str(e)}", exc_info=True)
             # Return default scores on error
             return {
                 "estrogen_high": 0,
@@ -457,3 +505,168 @@ class HormoneScoringService:
         
         # Return only hormones with score > 0
         return [(h, s) for h, s in sorted_hormones[:top_n] if s > 0]
+    
+    # ==================== LLM-BASED SCORING ====================
+    
+    @staticmethod
+    async def score_free_text_with_llm(symptom_others: str, family_others: str) -> Dict:
+        """
+        Use Gemini 2.5 Flash to score free-text symptoms and family history.
+        
+        Args:
+            symptom_others: Free-text symptoms from "Others" field
+            family_others: Free-text family history from "Others" field
+            
+        Returns:
+            Dict with 8 hormone scores (0-3) from LLM analysis
+            Returns empty dict on error
+        """
+        # Skip if both fields are empty
+        if not symptom_others and not family_others:
+            logger.debug("No free-text input provided, skipping LLM scoring")
+            return {}
+        
+        try:
+            import google.generativeai as genai
+            from pydantic import BaseModel, Field
+            
+            # Define schema for structured output
+            class HormoneScores(BaseModel):
+                estrogen_high: int = Field(ge=0, le=3, description="Estrogen high score (0-3)")
+                estrogen_low: int = Field(ge=0, le=3, description="Estrogen low score (0-3)")
+                progesterone_low: int = Field(ge=0, le=3, description="Progesterone low score (0-3)")
+                androgens_high: int = Field(ge=0, le=3, description="Androgens high score (0-3)")
+                insulin_high: int = Field(ge=0, le=3, description="Insulin high score (0-3)")
+                cortisol_high: int = Field(ge=0, le=3, description="Cortisol high score (0-3)")
+                cortisol_low: int = Field(ge=0, le=3, description="Cortisol low score (0-3)")
+                thyroid_low: int = Field(ge=0, le=3, description="Thyroid low score (0-3)")
+            
+            # Get Gemini API key from settings
+            gemini_api_key = settings.GEMINI_API_KEY
+            if not gemini_api_key:
+                logger.warning("GEMINI_API_KEY not found in settings, skipping LLM scoring")
+                return {}
+            
+            # Configure Gemini API
+            genai.configure(api_key=gemini_api_key)
+            
+            # List of models to try (in order of preference)
+            # Primary: Stable production model from settings
+            # Fallbacks: Other stable models if primary fails
+            models_to_try = [
+                settings.GEMINI_MODEL,           # From config (gemini-2.5-flash)
+                'gemini-2.0-flash',              # Stable 2.0 version
+                'gemini-flash-latest',           # Latest stable flash
+                'gemini-2.5-flash-lite',         # Lighter version
+            ]
+            
+            last_error = None
+            response = None
+            
+            # Try each model until one succeeds
+            for model_name in models_to_try:
+                try:
+                    logger.info(f"Attempting Gemini model: {model_name}")
+                    model = genai.GenerativeModel(model_name)
+            
+                    # Format user prompt with actual data
+                    user_prompt = USER_PROMPT_TEMPLATE.format(
+                        symptom_others=symptom_others or "None",
+                        family_others=family_others or "None"
+                    )
+                    
+                    # Combine system and user prompts
+                    full_prompt = f"{SYSTEM_PROMPT}\n\n{user_prompt}"
+                    
+                    # Call Gemini with simple configuration
+                    response = model.generate_content(
+                        full_prompt,
+                        generation_config={"temperature": 0.3}
+                    )
+                    
+                    # If we got here, the call succeeded
+                    logger.info(f"✓ Successfully used model: {model_name}")
+                    break
+                    
+                except Exception as model_error:
+                    last_error = model_error
+                    logger.warning(f"Model {model_name} failed: {str(model_error)[:100]}")
+                    continue
+            
+            # If all models failed, raise the last error
+            if response is None:
+                raise last_error if last_error else Exception("All Gemini models failed")
+            
+            # Parse response
+            response_text = response.text
+            logger.debug(f"LLM raw response: {response_text[:200]}...")
+            
+            # Extract JSON from response (handle markdown code blocks)
+            import re
+            json_match = re.search(r'```json\s*(\{.*?\})\s*```', response_text, re.DOTALL)
+            if json_match:
+                json_text = json_match.group(1)
+            else:
+                # Try to find any JSON object in the response
+                json_match = re.search(r'\{.*?\}', response_text, re.DOTALL)
+                if json_match:
+                    json_text = json_match.group(0)
+                else:
+                    json_text = response_text
+            
+            logger.debug(f"Extracted JSON: {json_text}")
+            
+            # Parse and validate response
+            hormone_scores = HormoneScores.model_validate_json(json_text)
+            
+            # Convert to dict
+            llm_scores = hormone_scores.model_dump()
+            
+            logger.info(f"LLM scoring completed: {llm_scores}")
+            return llm_scores
+            
+        except ImportError as e:
+            logger.error(f"Required package not installed: {e}")
+            logger.error("Please install: pip install google-genai pydantic")
+            return {}
+        except Exception as e:
+            logger.error(f"Error in LLM-based scoring: {str(e)}", exc_info=True)
+            return {}
+    
+    @staticmethod
+    def merge_scores(table_scores: Dict, llm_scores: Dict) -> Dict:
+        """
+        Merge table-based scores with LLM-based scores.
+        
+        Strategy:
+        - Take MAXIMUM score for each hormone (LLM can add new evidence)
+        - Cap all scores at 3 (maximum rating)
+        - LLM scores augment, don't replace, table scores
+        
+        Args:
+            table_scores: Scores from clinical tables (0-3 per hormone)
+            llm_scores: Scores from LLM analysis (0-3 per hormone)
+            
+        Returns:
+            Merged scores dictionary
+        """
+        if not llm_scores:
+            return table_scores
+        
+        merged = table_scores.copy()
+        
+        # Merge each hormone score (take maximum)
+        for hormone in ["estrogen_high", "estrogen_low", "progesterone_low", 
+                       "androgens_high", "insulin_high", "cortisol_high", 
+                       "cortisol_low", "thyroid_low"]:
+            
+            table_score = table_scores.get(hormone, 0)
+            llm_score = llm_scores.get(hormone, 0)
+            
+            # Take maximum and cap at 3
+            merged[hormone] = min(max(table_score, llm_score), 3)
+            
+            if llm_score > table_score:
+                logger.debug(f"LLM boosted {hormone}: {table_score} → {merged[hormone]}")
+        
+        return merged

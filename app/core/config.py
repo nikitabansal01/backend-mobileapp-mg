@@ -47,6 +47,11 @@ class Settings(BaseSettings):
     # Groq settings
     GROQ_API_KEY: str = ""
     
+    # Gemini settings
+    GEMINI_API_KEY: str = ""
+    # Primary Gemini model preference (stable production model)
+    GEMINI_MODEL: str = "gemini-2.5-flash"
+    
     # Redis settings
     REDIS_URL: str = "redis://localhost:6379"
     
